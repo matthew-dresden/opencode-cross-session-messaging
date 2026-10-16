@@ -1,6 +1,6 @@
 {
   "name": "@matthew-dresden/opencode-cross-session-messaging",
-  "version": "0.2.22",
+  "version": "1.0.0",
   "description": "OpenCode plugin for cross-session messaging — local file IPC or cross-device relay via HTTP polling. Sessions discover, ask, and reply across machines.",
   "type": "module",
   "license": "Apache-2.0",

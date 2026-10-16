@@ -1,0 +1,14 @@
+opencode-cross-session-messaging
+Copyright 2026 Matthew Dresden
+
+This product includes software developed by kinminghao
+(https://github.com/kinminghao/cross-session-messaging), originally
+licensed under the MIT License. The upstream copyright notice is retained
+here: Copyright (c) 2025 kinminghao (see the upstream LICENSE file,
+reproduced in the repository history). The MIT-licensed upstream code,
+imported with full history at upstream commit
+70bcab73196dbbc4d2c33030a153d01314ca2cb3 (upstream main HEAD; upstream has
+published no version tags), is relicensed under the Apache License 2.0
+in this fork, with attribution retained in this NOTICE file. This
+repository and its derivative works are licensed under the Apache License
+2.0, which the LICENSE file carries in full.

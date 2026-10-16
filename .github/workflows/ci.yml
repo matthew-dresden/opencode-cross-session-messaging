@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate PR title (conventional commits, breaking ! supported)
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python3 -m ci.validate_pr_title --title "$PR_TITLE"
+
+  lint:
+    # Upstream is bun-based and ships no linter; the static-analysis gate
+    # for this package is the TypeScript compiler with --noEmit
+    # (upstream script "typecheck"). The job keeps the recipe-uniform
+    # name "lint".
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Static analysis (tsc --noEmit)
+        shell: bash
+        run: bun run typecheck
+
+  build:
+    # The only build target in this package is the web dashboard
+    # (vite build -> web/dist/, which package.json "files" ships).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Build dashboard (vite)
+        shell: bash
+        run: bun run dashboard:build
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Unit and functional tests (upstream runner — bun test)
+        shell: bash
+        run: bun test
+
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: License and NOTICE compliance
+        shell: bash
+        run: node scripts/check-license.mjs
+
+  tarball-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Build dashboard for tarball contents
+        shell: bash
+        run: bun run dashboard:build
+
+      - name: Tarball allowlist and leak gates
+        shell: bash
+        run: node scripts/check-tarball.mjs
+
+  version-immutability:
+    # Release-bot PRs are exempt: the release pipeline owns the version field.
+    # The bot identity is configuration (repo variable RELEASE_BOT_LOGIN, set
+    # to matthewdresden-opencode-mcp[bot]). If the variable is unset the check
+    # enforces on every PR (fail-closed).
+    if: github.event.pull_request.user.login != vars.RELEASE_BOT_LOGIN
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version immutability (package.json version is release-automation-owned)
+        shell: bash
+        run: python3 -m ci.check_version_immutability --base-ref origin/main

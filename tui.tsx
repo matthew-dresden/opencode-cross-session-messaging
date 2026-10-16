@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal, For, onCleanup, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
-import type { TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
+import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { hostname, networkInterfaces } from "node:os"
@@ -15,6 +15,34 @@ import {
   getRelayUrl,
   writeRelayUrl,
 } from "./src/config.ts"
+
+/**
+ * V2 CLI plugin (ported from the V1 experimental TUI plugin API, story 2.4).
+ *
+ * Import surface: `@opencode/plugin/tui` — the V2 CLI host resolves this
+ * specifier at runtime (verified in the opencode 2.0.30 binary, which aliases
+ * it to its bundled implementation), so no runtime dependency is required;
+ * `@opencode/plugin` is a devDependency for typechecking only.
+ *
+ * V1 → V2 API mapping applied here (full table in the port summary):
+ * - `TuiPluginModule { id, tui(api) }` → `Plugin.define({ id, setup(context) })`
+ * - `api.lifecycle.onDispose(fn)` → cleanup function returned from setup
+ * - `api.command.register(...)` → `context.keymap.layer(...)` palette/slash commands
+ * - `api.slots.register({ slots: { sidebar_title } })` → `context.ui.slot({ append: "sidebar.content" })`
+ *   (V1 `sidebar_title` does not exist in V2; `sidebar.content` is the nearest slot)
+ * - `api.ui.toast({ variant, message })` → `context.ui.toast.show({ message, variant })`
+ * - `api.ui.dialog.setSize/replace` + `<api.ui.DialogPrompt/>`/`<api.ui.DialogSelect/>`
+ *   → promise-based `context.ui.dialog.prompt/select` and `dialog.set` + `dialog.show`
+ *   for custom JSX panels
+ * - `api.route.current` (`name`, `params.sessionID`) → `context.ui.router.current()` (`type`, `sessionID`)
+ * - `api.state.session.get` → `context.data.session.get`
+ * - `api.state.path.directory` / `.worktree` → `context.location.directory` /
+ *   `context.data.session.get(id).projectID` (LocationRef carries no project
+ *   metadata; V1 recorded the worktree path as projectId — V2 records the
+ *   real project id)
+ * - theme tokens: `theme.text`→`theme.text.base`, `theme.textMuted`→`theme.text.muted`,
+ *   `theme.primary`→`theme.text.action.primary.focused`, `theme.success`→`theme.text.feedback.success.base`
+ */
 
 let activeRelay: RelayServer | null = null
 
@@ -178,12 +206,13 @@ async function deleteSession(sessionId: string): Promise<void> {
 }
 
 function PeersPanel(props: {
-  api: TuiPluginApi
   entries: RegistryEntry[]
   selfId?: string
 }) {
-  const api = props.api
-  const theme = () => api.theme.current
+  // V2: plugin context comes from usePlugin() inside host-rendered JSX
+  // instead of the V1 `api` prop.
+  const context = usePlugin()
+  const theme = context.theme
   const localDevice = hostname()
   const [entries, setEntries] = createSignal(props.entries)
   const [tabIndex, setTabIndex] = createSignal(0)
@@ -310,7 +339,7 @@ function PeersPanel(props: {
     if (evt.name === "q" || evt.name === "escape") {
       evt.preventDefault()
       evt.stopPropagation()
-      api.ui.dialog.clear()
+      context.ui.dialog.clear()
       return
     }
     if (evt.name === "tab") {
@@ -352,7 +381,7 @@ function PeersPanel(props: {
       const entry = currentTab()?.items[rowIndex()]
       if (!entry) return
       if (copyToClipboard(formatSessionInfo(entry))) {
-        api.ui.toast({
+        context.ui.toast.show({
           variant: "success",
           message: `Copied session info for ${entry.sessionId}`,
         })
@@ -374,8 +403,8 @@ function PeersPanel(props: {
             setEntries(updated)
             setConfirmingDelete(null)
             if (updated.length === 0) {
-              api.ui.dialog.clear()
-              api.ui.toast({ variant: "info", message: "No sessions." })
+              context.ui.dialog.clear()
+              context.ui.toast.show({ variant: "info", message: "No sessions." })
               return
             }
             const devNames = [
@@ -390,13 +419,13 @@ function PeersPanel(props: {
             setRowIndex((i) =>
               Math.min(i, Math.max(0, tabItems.length - 1)),
             )
-            api.ui.toast({
+            context.ui.toast.show({
               variant: "success",
               message: `Removed ${entry.sessionId}`,
             })
           } catch (error) {
             setConfirmingDelete(null)
-            api.ui.toast({
+            context.ui.toast.show({
               variant: "error",
               message: `Failed: ${error instanceof Error ? error.message : String(error)}`,
             })
@@ -411,20 +440,20 @@ function PeersPanel(props: {
 
   return (
     <box flexDirection="column" paddingTop={1} paddingLeft={2} paddingRight={2}>
-      <text fg={theme().text}>
+      <text fg={theme.text.base}>
         {`Peer Sessions (${entries().length})  tab·↑↓·←→·⏎·⌫·esc`}
       </text>
-      <text fg={theme().textMuted}>{tabLine()}</text>
-      <text fg={theme().text}>{""}</text>
+      <text fg={theme.text.muted}>{tabLine()}</text>
+      <text fg={theme.text.base}>{""}</text>
       <For each={visibleLines()}>
         {(line) => (
           <text
             fg={
               line.style === "selected"
-                ? theme().primary
+                ? theme.text.action.primary.focused
                 : line.style === "muted"
-                  ? theme().textMuted
-                  : theme().text
+                  ? theme.text.muted
+                  : theme.text.base
             }
           >
             {line.text || " "}
@@ -436,12 +465,11 @@ function PeersPanel(props: {
 }
 
 function RelayStatusPanel(props: {
-  api: TuiPluginApi
   port: number
   localIp: string
 }) {
-  const api = props.api
-  const theme = () => api.theme.current
+  const context = usePlugin()
+  const theme = context.theme
 
   const [peers, setPeers] = createSignal(activeRelay?.peersByDevice ?? [])
   const timer = setInterval(() => {
@@ -453,7 +481,7 @@ function RelayStatusPanel(props: {
     if (evt.name === "q" || evt.name === "escape") {
       evt.preventDefault()
       evt.stopPropagation()
-      api.ui.dialog.clear()
+      context.ui.dialog.clear()
       return
     }
     if (evt.name === "s") {
@@ -465,8 +493,11 @@ function RelayStatusPanel(props: {
         stopRelayPolling()
         stopClientPolling()
         void clearRelayUrl()
-        api.ui.dialog.clear()
-        api.ui.toast({ variant: "info", message: "Relay server stopped." })
+        context.ui.dialog.clear()
+        context.ui.toast.show({
+          variant: "info",
+          message: "Relay server stopped.",
+        })
       }
       return
     }
@@ -475,7 +506,7 @@ function RelayStatusPanel(props: {
       evt.stopPropagation()
       const url = `http://${props.localIp}:${props.port}`
       if (copyToClipboard(url)) {
-        api.ui.toast({ variant: "success", message: `Copied: ${url}` })
+        context.ui.toast.show({ variant: "success", message: `Copied: ${url}` })
       }
       return
     }
@@ -490,13 +521,13 @@ function RelayStatusPanel(props: {
       gap={1}
       flexDirection="column"
     >
-      <text fg={theme().text}>
+      <text fg={theme.text.base}>
         <b>Relay Server</b>
       </text>
       <box flexDirection="column" paddingLeft={2} gap={0}>
         <box flexDirection="row" gap={1}>
-          <text fg={theme().textMuted}>Listen:</text>
-          <text fg={theme().primary}>
+          <text fg={theme.text.muted}>Listen:</text>
+          <text fg={theme.text.action.primary.focused}>
             http://{props.localIp}:{props.port}
           </text>
         </box>
@@ -506,8 +537,8 @@ function RelayStatusPanel(props: {
           <For each={peers()}>
             {(pg) => (
               <box flexDirection="row" gap={1}>
-                <text fg={theme().text}>{pg.device}</text>
-                <text fg={theme().textMuted}>
+                <text fg={theme.text.base}>{pg.device}</text>
+                <text fg={theme.text.muted}>
                   ({pg.count} {pg.count === 1 ? "peer" : "peers"})
                 </text>
               </box>
@@ -515,9 +546,9 @@ function RelayStatusPanel(props: {
           </For>
         </box>
       </Show>
-      <text fg={theme().textMuted}>c copy URL · s stop · esc close</text>
+      <text fg={theme.text.muted}>c copy URL · s stop · esc close</text>
       <box paddingTop={1}>
-        <text fg={theme().textMuted}>
+        <text fg={theme.text.muted}>
           On other machines: /join http://{props.localIp}:{props.port}
         </text>
       </box>
@@ -525,337 +556,326 @@ function RelayStatusPanel(props: {
   )
 }
 
-
-
-const plugin: TuiPluginModule = {
+export default Plugin.define({
   id: PLUGIN_ID,
-  tui: async (api) => {
-    const command = api.command
-    if (!command) return
-
+  setup(context) {
     startClientPolling()
-    api.lifecycle.onDispose(() => {
-      stopClientPolling()
-      stopRelayPolling()
-    })
 
-    api.slots.register({
-      slots: {
-        sidebar_title: (ctx) => {
-          const server = relayInfo()
-          const client = clientInfo()
-          if (!server && !client) return <></>
-          const theme = ctx.theme.current
-          const peers = server?.peers ?? client?.peers ?? []
-          const totalPeers = peers.reduce((s, p) => s + p.count, 0)
-          return (
-            <box flexDirection="column" paddingLeft={1} paddingBottom={1}>
-              <Show when={server}>
-                <text fg={theme.success}>
-                  <b>⚡ SERVER :{server!.port}</b>
-                </text>
-                <text fg={theme.textMuted}>
-                  http://{server!.localIp}:{server!.port}
-                </text>
-              </Show>
-              <Show when={!server && client}>
-                <text fg={theme.primary}>
-                  <b>⚡ CLIENT</b>
-                </text>
-                <text fg={theme.textMuted}>{client!.url}</text>
-              </Show>
-              <Show
-                when={peers.length > 0}
-                fallback={
-                  <text fg={theme.textMuted}>
-                    {server ? "waiting for peers..." : "no peers"}
-                  </text>
+    context.keymap.layer(() => ({
+      mode: "global",
+      commands: [
+        {
+          id: `${PLUGIN_ID}.peers`,
+          title: "Show active peer sessions",
+          group: "Sessions",
+          palette: true,
+          slash: { name: "peers" },
+          run: async () => {
+            try {
+              let entries: RegistryEntry[]
+              const relayUrl = getRelayUrl()
+              if (relayUrl) {
+                const res = await fetch(`${relayUrl}/api/list`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    clientId: `tui-peers-${randomUUID().slice(0, 8)}`,
+                    requestId: randomUUID(),
+                  }),
+                })
+                const data = (await res.json()) as {
+                  entries?: RegistryEntry[]
                 }
-              >
-                <text fg={theme.text}>
-                  {totalPeers} {totalPeers === 1 ? "peer" : "peers"}
-                </text>
-                <box flexDirection="column" paddingLeft={2}>
-                  <For each={peers}>
-                    {(pg) => (
-                      <text fg={theme.textMuted}>
-                        {pg.device} ({pg.count})
-                      </text>
-                    )}
-                  </For>
-                </box>
-              </Show>
-            </box>
-          )
-        },
-      },
-    })
-
-    command.register(() => [
-      {
-        title: "Show active peer sessions",
-        value: `${PLUGIN_ID}.peers`,
-        category: "Sessions",
-        slash: { name: "peers" },
-        onSelect: async () => {
-          try {
-            let entries: RegistryEntry[]
-            const relayUrl = getRelayUrl()
-            if (relayUrl) {
-              const res = await fetch(`${relayUrl}/api/list`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  clientId: `tui-peers-${randomUUID().slice(0, 8)}`,
-                  requestId: randomUUID(),
-                }),
-              })
-              const data = (await res.json()) as {
-                entries?: RegistryEntry[]
+                entries = data.entries ?? []
+              } else {
+                entries = await listEntries()
               }
-              entries = data.entries ?? []
-            } else {
-              entries = await listEntries()
+              if (entries.length === 0) {
+                context.ui.toast.show({
+                  variant: "info",
+                  message: "No sessions are currently registered.",
+                })
+                return
+              }
+              context.ui.dialog.set({ size: "large" })
+              context.ui.dialog.show(() => (
+                <PeersPanel entries={entries} />
+              ))
+            } catch (error) {
+              context.ui.toast.show({
+                variant: "error",
+                message: `Failed to list sessions: ${error instanceof Error ? error.message : String(error)}`,
+              })
             }
-            if (entries.length === 0) {
-              api.ui.toast({
-                variant: "info",
-                message: "No sessions are currently registered.",
+          },
+        },
+        {
+          id: `${PLUGIN_ID}.register`,
+          title: "Register current session",
+          group: "Sessions",
+          palette: true,
+          slash: { name: "register" },
+          run: async () => {
+            const route = context.ui.router.current()
+            if (route.type !== "session") {
+              context.ui.toast.show({
+                variant: "warning",
+                message: "Navigate to a session first.",
               })
               return
             }
-            api.ui.dialog.setSize("large")
-            api.ui.dialog.replace(() => (
-              <PeersPanel api={api} entries={entries} />
-            ))
-          } catch (error) {
-            api.ui.toast({
-              variant: "error",
-              message: `Failed to list sessions: ${error instanceof Error ? error.message : String(error)}`,
+            const sessionID = route.sessionID
+            const session = context.data.session.get(sessionID)
+            if (!session) {
+              context.ui.toast.show({
+                variant: "warning",
+                message: "Session not found in local cache.",
+              })
+              return
+            }
+            const defaultSummary = session.title ?? ""
+            // V2 note: LocationRef carries no project metadata; the registry's
+            // projectId comes from the session itself (V1 recorded the
+            // worktree path here — see the port summary).
+            const projectId = session.projectID
+            const summary = await context.ui.dialog.prompt({
+              title: "Register Session",
+              placeholder: "e.g. refactoring OAuth in src/auth/oauth.ts",
+              value: defaultSummary,
             })
-          }
-        },
-      },
-      {
-        title: "Register current session",
-        value: `${PLUGIN_ID}.register`,
-        category: "Sessions",
-        slash: { name: "register" },
-        onSelect: async () => {
-          const route = api.route.current
-          if (route.name !== "session") {
-            api.ui.toast({
-              variant: "warning",
-              message: "Navigate to a session first.",
-            })
-            return
-          }
-          const sessionID = route.params?.sessionID as string
-          const session = api.state.session.get(sessionID)
-          const defaultSummary = session?.title ?? ""
-          api.ui.dialog.setSize("medium")
-          api.ui.dialog.replace(() => (
-            <api.ui.DialogPrompt
-              title="Register Session"
-              placeholder="e.g. refactoring OAuth in src/auth/oauth.ts"
-              value={defaultSummary}
-              onConfirm={async (summary: string) => {
-                api.ui.dialog.clear()
-                const trimmed = summary.trim()
-                if (trimmed.length < 5) {
-                  api.ui.toast({
-                    variant: "warning",
-                    message: "Summary must be at least 5 characters.",
-                  })
-                  return
-                }
-                try {
-                  const relayUrl = getRelayUrl()
-                  if (relayUrl) {
-                    const res = await fetch(`${relayUrl}/api/register`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        clientId: `tui-reg-${randomUUID().slice(0, 8)}`,
-                        sessionId: sessionID,
-                        summary: trimmed,
-                        directory: api.state.path.directory,
-                        projectId: api.state.path.worktree,
-                        deviceName: hostname(),
-                      }),
-                    })
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-                  }
-                  await upsertEntry({
-                    sessionId: sessionID,
-                    summary: trimmed,
-                    directory: api.state.path.directory,
-                    projectId: api.state.path.worktree,
-                  })
-                  api.ui.toast({
-                    variant: "success",
-                    message: `Session registered: ${trimmed}`,
-                  })
-                } catch (error) {
-                  api.ui.toast({
-                    variant: "error",
-                    message: `Failed to register: ${error instanceof Error ? error.message : String(error)}`,
-                  })
-                }
-              }}
-              onCancel={() => api.ui.dialog.clear()}
-            />
-          ))
-        },
-      },
-      {
-        title: "Start/stop relay server",
-        value: `${PLUGIN_ID}.relay`,
-        category: "Sessions",
-        slash: { name: "relay" },
-        onSelect: async () => {
-          if (activeRelay) {
-            const localIp = getLocalIp()
-            api.ui.dialog.setSize("medium")
-            api.ui.dialog.replace(() => (
-              <RelayStatusPanel
-                api={api}
-                port={activeRelay!.port}
-                localIp={localIp}
-              />
-            ))
-            return
-          }
-
-          api.ui.dialog.setSize("medium")
-          api.ui.dialog.replace(() => (
-            <api.ui.DialogPrompt
-              title="Start Relay Server"
-              placeholder={`Port (default: ${RELAY_DEFAULT_PORT})`}
-              value={String(RELAY_DEFAULT_PORT)}
-              onConfirm={async (portStr: string) => {
-                api.ui.dialog.clear()
-                const port =
-                  parseInt(portStr.trim(), 10) || RELAY_DEFAULT_PORT
-                if (port < 1024 || port > 65535) {
-                  api.ui.toast({
-                    variant: "error",
-                    message: "Port must be between 1024 and 65535.",
-                  })
-                  return
-                }
-                try {
-                  const { RelayServer } = await import(
-                    "./src/relay/server.ts"
-                  )
-                  activeRelay = new RelayServer(port)
-                  activeRelay.start()
-                  startRelayPolling()
-                  const localIp = getLocalIp()
-                  const selfUrl = `http://127.0.0.1:${port}`
-                  await writeRelayUrl(selfUrl)
-                  startClientPolling()
-                  api.ui.toast({
-                    variant: "success",
-                    message: `Relay started on http://${localIp}:${port}`,
-                  })
-                } catch (error) {
-                  activeRelay = null
-                  api.ui.toast({
-                    variant: "error",
-                    message: `Failed to start relay: ${error instanceof Error ? error.message : String(error)}`,
-                  })
-                }
-              }}
-              onCancel={() => api.ui.dialog.clear()}
-            />
-          ))
-        },
-      },
-      {
-        title: "Join a relay server",
-        value: `${PLUGIN_ID}.join`,
-        category: "Sessions",
-        slash: { name: "join" },
-        onSelect: async () => {
-          const history = getRelayHistory()
-
-          const doJoin = async (url: string) => {
-            api.ui.dialog.clear()
-            const trimmed = url.trim()
-            if (
-              !trimmed.startsWith("http://") &&
-              !trimmed.startsWith("https://")
-            ) {
-              api.ui.toast({
-                variant: "error",
-                message: "URL must start with http:// or https://",
+            // undefined = dialog cancelled (Escape / replaced) — V1 onCancel
+            // only cleared the dialog, so cancel stays silent here too.
+            if (summary === undefined) return
+            const trimmed = summary.trim()
+            if (trimmed.length < 5) {
+              context.ui.toast.show({
+                variant: "warning",
+                message: "Summary must be at least 5 characters.",
               })
               return
             }
             try {
-              await writeRelayUrl(trimmed)
-              api.ui.toast({
+              const loc =
+                context.location ?? context.data.location.default()
+              const relayUrl = getRelayUrl()
+              if (relayUrl) {
+                const res = await fetch(`${relayUrl}/api/register`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    clientId: `tui-reg-${randomUUID().slice(0, 8)}`,
+                    sessionId: sessionID,
+                    summary: trimmed,
+                    directory: loc.directory,
+                    projectId,
+                    deviceName: hostname(),
+                  }),
+                })
+                if (!res.ok) throw new Error(`HTTP ${res.status}`)
+              }
+              await upsertEntry({
+                sessionId: sessionID,
+                summary: trimmed,
+                directory: loc.directory,
+                projectId,
+              })
+              context.ui.toast.show({
                 variant: "success",
-                message: `Connecting to ${trimmed}...`,
+                message: `Session registered: ${trimmed}`,
               })
             } catch (error) {
-              api.ui.toast({
+              context.ui.toast.show({
                 variant: "error",
-                message: `Failed: ${error instanceof Error ? error.message : String(error)}`,
+                message: `Failed to register: ${error instanceof Error ? error.message : String(error)}`,
               })
             }
-          }
-
-          if (history.length > 0) {
-            const options = [
-              ...history.map((url) => ({
-                title: url,
-                value: url,
-                description: "Reconnect",
-              })),
-              {
-                title: "Enter new URL...",
-                value: "__new__",
-                description: "Join a different relay",
-              },
-            ]
-            api.ui.dialog.setSize("medium")
-            api.ui.dialog.replace(() => (
-              <api.ui.DialogSelect
-                title="Join Relay"
-                options={options}
-                onSelect={(opt) => {
-                  if (opt.value === "__new__") {
-                    api.ui.dialog.replace(() => (
-                      <api.ui.DialogPrompt
-                        title="Join Relay"
-                        placeholder="http://192.168.1.100:7351"
-                        onConfirm={(url: string) => void doJoin(url)}
-                        onCancel={() => api.ui.dialog.clear()}
-                      />
-                    ))
-                  } else {
-                    void doJoin(opt.value as string)
-                  }
-                }}
-              />
-            ))
-          } else {
-            api.ui.dialog.setSize("medium")
-            api.ui.dialog.replace(() => (
-              <api.ui.DialogPrompt
-                title="Join Relay"
-                placeholder="ws://192.168.1.100:7351"
-                onConfirm={(url: string) => void doJoin(url)}
-                onCancel={() => api.ui.dialog.clear()}
-              />
-            ))
-          }
+          },
         },
-      },
-    ])
-  },
-}
+        {
+          id: `${PLUGIN_ID}.relay`,
+          title: "Start/stop relay server",
+          group: "Sessions",
+          palette: true,
+          slash: { name: "relay" },
+          run: async () => {
+            if (activeRelay) {
+              const localIp = getLocalIp()
+              context.ui.dialog.set({ size: "medium" })
+              context.ui.dialog.show(() => (
+                <RelayStatusPanel
+                  port={activeRelay!.port}
+                  localIp={localIp}
+                />
+              ))
+              return
+            }
 
-export default plugin
+            const portStr = await context.ui.dialog.prompt({
+              title: "Start Relay Server",
+              placeholder: `Port (default: ${RELAY_DEFAULT_PORT})`,
+              value: String(RELAY_DEFAULT_PORT),
+            })
+            if (portStr === undefined) return
+            const port = parseInt(portStr.trim(), 10) || RELAY_DEFAULT_PORT
+            if (port < 1024 || port > 65535) {
+              context.ui.toast.show({
+                variant: "error",
+                message: "Port must be between 1024 and 65535.",
+              })
+              return
+            }
+            try {
+              const { RelayServer } = await import("./src/relay/server.ts")
+              activeRelay = new RelayServer(port)
+              activeRelay.start()
+              startRelayPolling()
+              const localIp = getLocalIp()
+              const selfUrl = `http://127.0.0.1:${port}`
+              await writeRelayUrl(selfUrl)
+              startClientPolling()
+              context.ui.toast.show({
+                variant: "success",
+                message: `Relay started on http://${localIp}:${port}`,
+              })
+            } catch (error) {
+              activeRelay = null
+              context.ui.toast.show({
+                variant: "error",
+                message: `Failed to start relay: ${error instanceof Error ? error.message : String(error)}`,
+              })
+            }
+          },
+        },
+        {
+          id: `${PLUGIN_ID}.join`,
+          title: "Join a relay server",
+          group: "Sessions",
+          palette: true,
+          slash: { name: "join" },
+          run: async () => {
+            const history = getRelayHistory()
+
+            const doJoin = async (url: string) => {
+              const trimmed = url.trim()
+              if (
+                !trimmed.startsWith("http://") &&
+                !trimmed.startsWith("https://")
+              ) {
+                context.ui.toast.show({
+                  variant: "error",
+                  message: "URL must start with http:// or https://",
+                })
+                return
+              }
+              try {
+                await writeRelayUrl(trimmed)
+                context.ui.toast.show({
+                  variant: "success",
+                  message: `Connecting to ${trimmed}...`,
+                })
+              } catch (error) {
+                context.ui.toast.show({
+                  variant: "error",
+                  message: `Failed: ${error instanceof Error ? error.message : String(error)}`,
+                })
+              }
+            }
+
+            if (history.length > 0) {
+              const selected = await context.ui.dialog.select<string>({
+                title: "Join Relay",
+                options: [
+                  ...history.map((url) => ({
+                    title: url,
+                    value: url,
+                    description: "Reconnect",
+                  })),
+                  {
+                    title: "Enter new URL...",
+                    value: "__new__",
+                    description: "Join a different relay",
+                  },
+                ],
+              })
+              if (selected === undefined) return
+              if (selected === "__new__") {
+                const url = await context.ui.dialog.prompt({
+                  title: "Join Relay",
+                  placeholder: "http://192.168.1.100:7351",
+                })
+                if (url !== undefined) await doJoin(url)
+              } else {
+                await doJoin(selected)
+              }
+            } else {
+              const url = await context.ui.dialog.prompt({
+                title: "Join Relay",
+                placeholder: "ws://192.168.1.100:7351",
+              })
+              if (url !== undefined) await doJoin(url)
+            }
+          },
+        },
+      ],
+    }))
+
+    // V1 slot `sidebar_title` has no V2 equivalent; `sidebar.content` is the
+    // nearest published slot (host slot tree per @opencode/plugin 2.0.30).
+    context.ui.slot({
+      append: "sidebar.content",
+      render: () => {
+        const server = relayInfo()
+        const client = clientInfo()
+        if (!server && !client) return <></>
+        const theme = context.theme
+        const peers = server?.peers ?? client?.peers ?? []
+        const totalPeers = peers.reduce((s, p) => s + p.count, 0)
+        return (
+          <box flexDirection="column" paddingLeft={1} paddingBottom={1}>
+            <Show when={server}>
+              <text fg={theme.text.feedback.success.base}>
+                <b>⚡ SERVER :{server!.port}</b>
+              </text>
+              <text fg={theme.text.muted}>
+                http://{server!.localIp}:{server!.port}
+              </text>
+            </Show>
+            <Show when={!server && client}>
+              <text fg={theme.text.action.primary.focused}>
+                <b>⚡ CLIENT</b>
+              </text>
+              <text fg={theme.text.muted}>{client!.url}</text>
+            </Show>
+            <Show
+              when={peers.length > 0}
+              fallback={
+                <text fg={theme.text.muted}>
+                  {server ? "waiting for peers..." : "no peers"}
+                </text>
+              }
+            >
+              <text fg={theme.text.base}>
+                {totalPeers} {totalPeers === 1 ? "peer" : "peers"}
+              </text>
+              <box flexDirection="column" paddingLeft={2}>
+                <For each={peers}>
+                  {(pg) => (
+                    <text fg={theme.text.muted}>
+                      {pg.device} ({pg.count})
+                    </text>
+                  )}
+                </For>
+              </box>
+            </Show>
+          </box>
+        )
+      },
+    })
+
+    // V1 `api.lifecycle.onDispose` → V2 cleanup function returned from setup.
+    return () => {
+      stopClientPolling()
+      stopRelayPolling()
+    }
+  },
+})

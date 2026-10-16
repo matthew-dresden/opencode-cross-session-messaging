@@ -14,6 +14,9 @@ concurrency:
 env:
   GIT_USER: "${{ vars.RELEASE_BOT_LOGIN }}"
   GIT_USER_EMAIL: "${{ vars.RELEASE_BOT_LOGIN }}@users.noreply.github.com"
+  # The release-pr job commits with `git add -A` after running python3 -m ci.*;
+  # bytecode caches must never reach the release branch tree.
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
   skip-check:

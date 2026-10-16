@@ -13,3 +13,7 @@ bun.lockb
 
 # 本地密钥文件（npm token 等），勿提交
 vars.txt
+
+# Python bytecode — CI release pipeline runs python3 -m ci.*; never commit caches
+__pycache__/
+*.py[cod]

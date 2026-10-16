@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # python3 -m ci.* steps must not leave bytecode caches in the workspace
+  PYTHONDONTWRITEBYTECODE: "1"
+
 concurrency:
   group: tag-release
   cancel-in-progress: false

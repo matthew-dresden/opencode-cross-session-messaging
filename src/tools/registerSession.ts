@@ -2,6 +2,75 @@ import { tool } from "@opencode-ai/plugin/tool"
 import { log } from "../logger.ts"
 import type { ITransport } from "../transport/interface.ts"
 
+/** What a tool execution reports back to its host (V1 wire shape). */
+export interface ToolOutcome {
+  title: string
+  output: string
+}
+
+export interface RegisterSessionDeps {
+  transport: ITransport
+  projectId: string
+  /** Informational registry field; unset for V2 registrations (no V2 equivalent). */
+  serverUrl?: string
+  daemonId: string
+  deviceName: string
+}
+
+export interface RegisterSessionCall {
+  sessionId: string
+  directory: string
+  summary: string
+}
+
+/**
+ * Shared registration logic for the V1 tool map and the V2 transform.
+ * Returns the V1 `{ title, output }` outcome; the V2 shape wraps `output`
+ * as `{ content }` (the V1 `title` is TUI sugar with no V2 payload field).
+ */
+export async function registerSessionCore(
+  deps: RegisterSessionDeps,
+  call: RegisterSessionCall,
+): Promise<ToolOutcome> {
+  const summary = call.summary.trim()
+  if (summary.length < 5) {
+    return {
+      title: "register failed",
+      output: `register_session error: summary must be at least 5 non-whitespace chars (got ${summary.length}).`,
+    }
+  }
+  try {
+    const entry = await deps.transport.register({
+      sessionId: call.sessionId,
+      summary,
+      directory: call.directory,
+      projectId: deps.projectId,
+      serverUrl: deps.serverUrl,
+      daemonId: deps.daemonId,
+      deviceName: deps.deviceName,
+    })
+    log.info("register_session:ok", {
+      sessionId: call.sessionId,
+      summaryChars: summary.length,
+    })
+    return {
+      title: "registered",
+      output:
+        `Registered session ${call.sessionId}.\n` +
+        `Summary: ${summary}\n` +
+        `Directory: ${call.directory}\n` +
+        `Project: ${deps.projectId}\n` +
+        `Updated: ${new Date(entry.updatedAt).toISOString()}`,
+    }
+  } catch (error) {
+    log.warn("register_session:fail", { error: String(error) })
+    return {
+      title: "register failed",
+      output: `register_session failed: ${String(error)}`,
+    }
+  }
+}
+
 export function createRegisterSessionTool(
   transport: ITransport,
   input: {
@@ -29,43 +98,14 @@ export function createRegisterSessionTool(
         ),
     },
     async execute(args, ctx) {
-      const summary = args.summary.trim()
-      if (summary.length < 5) {
-        return {
-          title: "register failed",
-          output: `register_session error: summary must be at least 5 non-whitespace chars (got ${summary.length}).`,
-        }
-      }
-      try {
-        const entry = await transport.register({
+      return registerSessionCore(
+        { transport, ...input },
+        {
           sessionId: ctx.sessionID,
-          summary,
           directory: ctx.directory,
-          projectId: input.projectId,
-          serverUrl: input.serverUrl,
-          daemonId: input.daemonId,
-          deviceName: input.deviceName,
-        })
-        log.info("register_session:ok", {
-          sessionId: ctx.sessionID,
-          summaryChars: summary.length,
-        })
-        return {
-          title: "registered",
-          output:
-            `Registered session ${ctx.sessionID}.\n` +
-            `Summary: ${summary}\n` +
-            `Directory: ${ctx.directory}\n` +
-            `Project: ${input.projectId}\n` +
-            `Updated: ${new Date(entry.updatedAt).toISOString()}`,
-        }
-      } catch (error) {
-        log.warn("register_session:fail", { error: String(error) })
-        return {
-          title: "register failed",
-          output: `register_session failed: ${String(error)}`,
-        }
-      }
+          summary: args.summary,
+        },
+      )
     },
   })
 }

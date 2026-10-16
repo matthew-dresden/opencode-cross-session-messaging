@@ -79,26 +79,33 @@ The package also exports a TUI plugin (`tui.tsx`) that adds two slash commands t
 
 ## Installation
 
+The package ships both plugin shapes from one entrypoint: opencode v2 hosts
+call `setup()` and v1 hosts (>= 1.18.29) call `server()`.
+
 ### Plugin (tools + inbox watcher)
 
-Add to `~/.config/opencode/opencode.json` (note: `opencode.json`, **not** `tui.json`):
+Add to `~/.config/opencode/opencode.json` (v2 config uses the `plugins` key):
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/opencode.json",
-  "plugin": ["opencode-cross-session-messaging"]
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["@matthew-dresden/opencode-cross-session-messaging"]
 }
 ```
 
-### TUI (optional — `/peers` and `/register` commands)
+### TUI (optional — `/peers`, `/register`, `/relay`, `/join` commands)
 
-Add to `~/.config/opencode/tui.json`:
+The TUI plugin targets the opencode **v2** CLI plugin API. Add it to
+`~/.config/opencode/cli.json`:
 
-```jsonc
+```json
 {
-  "plugin": ["opencode-cross-session-messaging/tui"]
+  "plugins": ["@matthew-dresden/opencode-cross-session-messaging/tui"]
 }
 ```
+
+The v1 `tui.json` plugin entry is no longer supported: `tui.tsx` imports
+`@opencode/plugin/tui`, which the v2 CLI host resolves at runtime.
 
 After changing the config, **fully quit and reopen** OpenCode.
 
@@ -107,14 +114,17 @@ After changing the config, **fully quit and reopen** OpenCode.
 ```bash
 bun install
 bun run typecheck    # tsc --noEmit
-bun test             # 62 tests / 10 files
+bun test             # 72 tests / 11 files
 ```
 
 ## Directory Structure
 
 ```
 src/
-├── index.ts                 # Entry — PluginModule default export
+├── index.ts                 # Entry — dual-shape default export (V1 server() + V2 setup())
+├── v2types.ts               # Minimal structural types for the V2 plugin context
+├── v2Tools.ts               # V2 tool definitions (ctx.tool.transform / JSON Schema)
+├── v2ClientAdapter.ts       # V2 ctx.session domain → ask-pipeline client seam
 ├── constants.ts             # PLUGIN_ID, timeouts, backoff, TTL, file layout constants
 ├── types.ts                 # RegistryEntry / Registry / param interfaces / Error subclasses
 ├── xdg.ts                   # XDG_STATE_HOME resolution + getRegistryPath()
@@ -122,14 +132,15 @@ src/
 ├── registry.ts              # Atomic file I/O + in-process mutex chain
 ├── fileTransport.ts         # File-based IPC: request/response file write, read, poll
 ├── inbox.ts                 # InboxWatcher — polls messages/ directory, processes inbound requests
-├── askAndWaitForReply.ts    # Send prompt + poll for assistant reply (via SDK)
-├── eventHooks.ts            # session.deleted event handler factory
+├── askAndWaitForReply.ts    # Send prompt + poll for assistant reply
+├── eventHooks.ts            # session.deleted handling: V1 hook factory + V2 subscription loop
 ├── abort.ts                 # AbortSignal utilities (abortableSleep, withAbortCleanup)
 └── tools/
-    ├── registerSession.ts   # Tool: register_session
-    ├── listSessions.ts      # Tool: list_sessions
-    └── askSession.ts        # Tool: ask_session (file-based IPC orchestrator)
-tui.tsx                      # TUI plugin — /peers dialog + /register input (SolidJS)
+    ├── registerSession.ts   # Tool: register_session (core shared by V1/V2 shapes)
+    ├── listSessions.ts      # Tool: list_sessions (core shared by V1/V2 shapes)
+    ├── askSession.ts        # Tool: ask_session (core shared by V1/V2 shapes)
+    └── connectRelay.ts      # Tool: connect_relay (core shared by V1/V2 shapes)
+tui.tsx                      # V2 CLI plugin — /peers, /register, /relay, /join (SolidJS)
 SKILL.md                     # LLM usage guide (skill definition)
 test/manual/
 └── MANUAL_TEST_PLAN.md      # 5-scenario E2E manual test plan

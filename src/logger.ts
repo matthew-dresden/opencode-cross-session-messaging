@@ -18,7 +18,8 @@ function getLogPath(): string {
   return logPath
 }
 
-export function initLogger(c: Client): void {
+/** The V2 setup path passes null — the V2 logger is file-only (`void client`). */
+export function initLogger(c: Client | null): void {
   client = c
 }
 

@@ -79,26 +79,33 @@ Session A (Daemon 1)                    Session B (Daemon 2)
 
 ## 安装
 
+本包在同一个入口同时提供两种插件形态：opencode v2 宿主调用 `setup()`，
+v1 宿主（>= 1.18.29）调用 `server()`。
+
 ### 插件（工具 + inbox watcher）
 
-加到 `~/.config/opencode/opencode.json`（注意是 `opencode.json`，**不是** `tui.json`）：
+加到 `~/.config/opencode/opencode.json`（v2 配置使用 `plugins` 键）：
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/opencode.json",
-  "plugin": ["opencode-cross-session-messaging"]
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["@matthew-dresden/opencode-cross-session-messaging"]
 }
 ```
 
-### TUI（可选——`/peers` 和 `/register` 命令）
+### TUI（可选——`/peers`、`/register`、`/relay`、`/join` 命令）
 
-加到 `~/.config/opencode/tui.json`：
+TUI 插件面向 opencode **v2** CLI 插件 API。加到
+`~/.config/opencode/cli.json`：
 
-```jsonc
+```json
 {
-  "plugin": ["opencode-cross-session-messaging/tui"]
+  "plugins": ["@matthew-dresden/opencode-cross-session-messaging/tui"]
 }
 ```
+
+v1 的 `tui.json` 插件入口不再支持：`tui.tsx` 导入
+`@opencode/plugin/tui`，由 v2 CLI 宿主在运行时解析。
 
 改完配置**完全退出并重新打开** OpenCode。
 
@@ -107,7 +114,7 @@ Session A (Daemon 1)                    Session B (Daemon 2)
 ```bash
 bun install
 bun run typecheck    # tsc --noEmit
-bun test             # 62 tests / 10 files
+bun test             # 72 tests / 11 files
 ```
 
 ## 目录结构

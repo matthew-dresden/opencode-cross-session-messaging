@@ -35,6 +35,15 @@ def _max_bump_since_last_tag(tag_prefix: str) -> str:
     Squash merges deliver one conventional commit per PR, so scanning the
     full range releases every pending change at its correct level.
 
+    Non-conventional subjects inside the scan range are tolerated LOUDLY:
+    each is skipped after printing a WARN line that lists the subject. This
+    tolerance exists for imported upstream history — forks inherit commits
+    that predate the conventional-commit gate (merge commits, non-standard
+    types like "debug:"), and such history is immutable. New commits are
+    fully enforced by the pr-title CI check before they can reach main. An
+    empty subject is never tolerated: it signals broken git data, not
+    legacy history, and fails the scan.
+
     Args:
         tag_prefix: The tag prefix to search (e.g. "v").
 
@@ -42,7 +51,7 @@ def _max_bump_since_last_tag(tag_prefix: str) -> str:
         One of "major", "minor", "patch".
 
     Raises:
-        SystemExit: If a commit message is not a valid conventional commit.
+        SystemExit: If a commit subject is empty or a git command fails.
     """
     last_tag = _find_last_tag(tag_prefix)
     commits = _get_commits(last_tag)
@@ -50,8 +59,19 @@ def _max_bump_since_last_tag(tag_prefix: str) -> str:
     for subject in commits:
         parsed = parse_commit_message(subject)
         if not parsed["valid"]:
-            print(f"Error: invalid commit message: {parsed['error']}", file=sys.stderr)
-            sys.exit(1)
+            if not subject.strip():
+                print(
+                    "Error: invalid commit message: Empty commit message",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(
+                "WARN: skipping non-conventional commit subject in release scan "
+                "(imported history; new commits are gated by the pr-title check): "
+                f"{subject}",
+                file=sys.stderr,
+            )
+            continue
         if not parsed["bump"]:
             continue
         if BUMP_RANK[parsed["bump"]] > BUMP_RANK[highest]:

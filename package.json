@@ -48,7 +48,8 @@
     "relay": "bun run src/relay/cli.ts",
     "relay:start": "bun run src/relay/cli.ts",
     "dashboard:dev": "vite --config web/vite.config.ts",
-    "dashboard:build": "vite build --config web/vite.config.ts"
+    "dashboard:build": "vite build --config web/vite.config.ts",
+    "prepare": "bash scripts/security/install-hooks.sh"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.17.4",

@@ -1,4 +1,5 @@
 import type { Server, ServerWebSocket } from "bun"
+import { createHash, timingSafeEqual } from "node:crypto"
 import { appendFileSync, existsSync, mkdirSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { RELAY_DEFAULT_PORT } from "../constants.ts"
@@ -8,19 +9,34 @@ import {
   type LogEvent,
   RelayCore,
 } from "./core.ts"
+import {
+  isWeakRelayToken,
+  MIN_RECOMMENDED_TOKEN_CHARS,
+  resolveRelayToken,
+} from "./token.ts"
 
 /** Default location of the built dashboard, relative to this file: project-root/web/dist. */
 const DEFAULT_STATIC_DIR = resolve(import.meta.dir, "..", "..", "web", "dist")
 
 export interface RelayServerOptions {
   port?: number
+  /** Bind interface. Defaults to loopback (127.0.0.1); a wider bind is an explicit operator decision. */
+  host?: string
+  /** Shared auth token; defaults to RELAY_TOKEN env or a generated 0600 token file. */
+  token?: string
+  /** Opt-in question previews in broadcasts/snapshot (default OFF). */
+  previews?: boolean
   staticDir?: string
 }
 
 export class RelayServer {
   readonly port: number
+  readonly host: string
+  readonly previews: boolean
   readonly core: RelayCore
   private readonly staticDir: string
+  private readonly tokenOption: string | undefined
+  private token: string | null = null
   private server: Server<undefined> | null = null
   private readonly wsClients = new Set<ServerWebSocket<unknown>>()
   private serverLogPath: string | null = null
@@ -33,12 +49,18 @@ export class RelayServer {
   constructor(portOrOpts?: number | RelayServerOptions) {
     if (typeof portOrOpts === "number") {
       this.port = portOrOpts
+      this.host = "127.0.0.1"
+      this.previews = false
+      this.tokenOption = undefined
       this.staticDir = DEFAULT_STATIC_DIR
     } else {
       this.port = portOrOpts?.port ?? RELAY_DEFAULT_PORT
+      this.host = portOrOpts?.host ?? "127.0.0.1"
+      this.previews = portOrOpts?.previews ?? false
+      this.tokenOption = portOrOpts?.token
       this.staticDir = portOrOpts?.staticDir ?? DEFAULT_STATIC_DIR
     }
-    this.core = new RelayCore()
+    this.core = new RelayCore({ previews: this.previews })
     this.logListener = (evt: LogEvent) => this.writeLog(evt)
     this.core.on("log", this.logListener)
   }
@@ -55,12 +77,29 @@ export class RelayServer {
     return this.core.clientDetails
   }
 
+  /** The port actually bound (differs from `port` when started on port 0). */
+  get actualPort(): number {
+    return this.server?.port ?? this.port
+  }
+
   start(): void {
     if (this.server) return
+    this.token = resolveRelayToken({ token: this.tokenOption })
+    // Weak-token warning (W1-U2c item G): a short operator-supplied token is
+    // warned about loudly at startup but still accepted (never
+    // warn-then-refuse). Generated tokens are 256-bit and never qualify.
+    // The token value itself is never logged.
+    if (isWeakRelayToken(this.token)) {
+      this.writeLog({
+        level: "warn",
+        tag: "relay",
+        message: `weak relay token in effect (shorter than ${MIN_RECOMMENDED_TOKEN_CHARS} chars); generated tokens are 256-bit; prefer the RELAY_TOKEN env or the 0600 token file over a short shared secret`,
+      })
+    }
     this.subscribeCoreEvents()
     this.server = Bun.serve({
       port: this.port,
-      hostname: "0.0.0.0",
+      hostname: this.host,
       fetch: (req, srv) => this.handleRequest(req, srv),
       websocket: {
         open: (ws) => this.onWsOpen(ws),
@@ -73,12 +112,15 @@ export class RelayServer {
     this.writeLog({
       level: "info",
       tag: "relay",
-      message: `listening on 0.0.0.0:${this.port}`,
+      message: `listening on ${this.host}:${this.port} (auth required on /api/*, /stats, /ws)`,
     })
   }
 
   stop(): void {
-    if (!this.server) return
+    if (!this.server) {
+      this.core.dispose()
+      return
+    }
     for (const ws of this.wsClients) {
       try {
         ws.close()
@@ -166,6 +208,32 @@ export class RelayServer {
     try {
       const url = new URL(req.url)
       const path = url.pathname
+
+      // Auth gate (security remediation 2026-11): every data surface
+      // (/api/*, /stats, /ws) requires the shared token, via the
+      // Authorization header or the token query param (WS clients in
+      // browsers cannot set headers). Static dashboard assets carry no
+      // data and stay reachable.
+      if (
+        path === "/ws" ||
+        path === "/stats" ||
+        path.startsWith("/api/")
+      ) {
+        if (!this.isAuthorized(req, url)) {
+          this.writeLog({
+            level: "warn",
+            tag: "relay",
+            message: `rejected ${req.method} ${path} (unauthorized)`,
+          })
+          return Response.json(
+            { error: "unauthorized" },
+            {
+              status: 401,
+              headers: { "WWW-Authenticate": "Bearer" },
+            },
+          )
+        }
+      }
 
       if (path === "/ws") {
         if (server.upgrade(req)) return undefined
@@ -328,6 +396,33 @@ export class RelayServer {
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * Timing-safe shared-token check. Accepts the token via the Authorization
+   * header (Bearer scheme, case-insensitive per RFC 7235 so bearer/Bearer/
+   * BEARER all validate; W1-U2c item E) or the token query param. The
+   * comparison hashes both sides so digest length never leaks token length.
+   */
+  private isAuthorized(req: Request, url: URL): boolean {
+    if (!this.token) return false
+    const queryCandidate = (url.searchParams.get("token") ?? "").trim()
+    const header = req.headers.get("authorization")
+    let candidate: string
+    if (header !== null && header.includes(" ")) {
+      const schemeEnd = header.indexOf(" ")
+      const isBearer =
+        header.slice(0, schemeEnd).toLowerCase() === "bearer"
+      candidate = isBearer
+        ? header.slice(schemeEnd + 1).trim()
+        : queryCandidate
+    } else {
+      candidate = queryCandidate
+    }
+    if (candidate.length === 0) return false
+    const candidateDigest = createHash("sha256").update(candidate).digest()
+    const tokenDigest = createHash("sha256").update(this.token).digest()
+    return timingSafeEqual(candidateDigest, tokenDigest)
   }
 
   private async serveStatic(path: string): Promise<Response> {

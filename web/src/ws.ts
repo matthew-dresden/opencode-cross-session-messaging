@@ -9,15 +9,31 @@ const RECONNECT_MAX_MS = 15_000
 export function createRelayConnection(opts: {
   onEvent: EventCallback
   onStatus: StatusCallback
+  /**
+   * Shared relay token (security remediation 2026-11). The relay gates /ws
+   * behind the token, and browsers cannot set headers on the WebSocket
+   * handshake, so the token travels as the ?token= query param (the same
+   * channel the relay CLI prints for dashboards).
+   */
+  token?: string
+  /** Explicit ws(s):// endpoint; defaults to the same-origin /ws. */
+  url?: string
 }) {
   let ws: WebSocket | null = null
   let reconnectMs = RECONNECT_BASE_MS
   let disposed = false
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-  function getWsUrl(): string {
+  function defaultWsUrl(): string {
     const proto = location.protocol === "https:" ? "wss:" : "ws:"
     return `${proto}//${location.host}/ws`
+  }
+
+  function getWsUrl(): string {
+    const base = opts.url ?? defaultWsUrl()
+    if (!opts.token) return base
+    const sep = base.includes("?") ? "&" : "?"
+    return `${base}${sep}token=${encodeURIComponent(opts.token)}`
   }
 
   function connect() {

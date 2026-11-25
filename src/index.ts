@@ -1,11 +1,16 @@
 import type { PluginModule } from "@opencode-ai/plugin"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { hostname } from "node:os"
 import { askAndWaitForReply, type AskClient } from "./askAndWaitForReply.ts"
-import { getRelayUrl } from "./config.ts"
+import {
+  getAllowedRelayHosts,
+  getRelayToken,
+  getRelayUrl,
+} from "./config.ts"
 import { PLUGIN_ID } from "./constants.ts"
 import { createEventHandler, runV2EventSubscription } from "./eventHooks.ts"
 import { initLogger, log } from "./logger.ts"
+import { validateRelayUrl, type RelayUrlDecision } from "./relayPolicy.ts"
 import { createAskSessionTool } from "./tools/askSession.ts"
 import { createConnectRelayTool } from "./tools/connectRelay.ts"
 import { createListSessionsTool } from "./tools/listSessions.ts"
@@ -48,6 +53,33 @@ interface DaemonWiring {
   dispose: () => Promise<void>
 }
 
+/**
+ * Relay-policy gate for plugin-init and poller connects (security
+ * remediation 2026-11): every relay URL honored here must pass the same
+ * policy as connect_relay (https-default with loopback-only http, operator
+ * host allowlist). Refusals are loud (logged with the policy reason, never
+ * swallowed) and leave the transport unchanged.
+ */
+function relayPolicyDecision(url: string): RelayUrlDecision {
+  return validateRelayUrl(url, getAllowedRelayHosts())
+}
+
+/**
+ * Digest of every config input the relay policy depends on: relay URL,
+ * operator allowlist, and the effective token. The poller re-evaluates the
+ * policy whenever this digest changes (W1-U2c), so an operator can recover
+ * from an init refusal by fixing the allowlist or rotating the token
+ * without touching the URL. Hashed so the token value never lands in
+ * state or logs.
+ */
+function relayPolicyDigest(): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([getRelayUrl(), getAllowedRelayHosts(), getRelayToken()]),
+    )
+    .digest("hex")
+}
+
 async function wireDaemon(params: {
   client: AskClient
   projectId: string
@@ -59,15 +91,35 @@ async function wireDaemon(params: {
 
   let inner
   if (relayUrl) {
-    const { RelayTransport } = await import("./transport/relay.ts")
-    inner = new RelayTransport(relayUrl)
-    log.info("plugin:init:relay", {
-      projectId: params.projectId,
-      directory: params.directory,
-      daemonId,
-      relayUrl,
-      device,
-    })
+    const decision = relayPolicyDecision(relayUrl)
+    if (decision.ok) {
+      const { RelayTransport } = await import("./transport/relay.ts")
+      inner = new RelayTransport(relayUrl, getRelayToken() ?? undefined)
+      log.info("plugin:init:relay", {
+        projectId: params.projectId,
+        directory: params.directory,
+        daemonId,
+        relayUrl,
+        device,
+      })
+    } else {
+      // Single refusal log with the full remediation detail (W1-U2c item I):
+      // the gate and the wiring must not emit the same refusal twice.
+      log.error("plugin:init:relay-refused", {
+        relayUrl,
+        code: decision.code,
+        reason: decision.message,
+        detail:
+          "stored relay URL failed the relay policy (https-default + operator allowlist); staying on file IPC until the operator fixes the config or calls connect_relay; the config poller re-evaluates on every policy-input change (relay URL, allowlist, token)",
+      })
+      inner = new FileTransport(params.client, daemonId)
+      log.info("plugin:init:file", {
+        projectId: params.projectId,
+        directory: params.directory,
+        daemonId,
+        device,
+      })
+    }
   } else {
     inner = new FileTransport(params.client, daemonId)
     log.info("plugin:init:file", {
@@ -84,31 +136,139 @@ async function wireDaemon(params: {
     askAndWaitForReply(params.client, sessionId, question, opts),
   )
 
-  let lastKnownUrl = relayUrl
-  const configPoller = setInterval(() => {
-    const currentUrl = getRelayUrl()
-    if (currentUrl === lastKnownUrl) return
-    lastKnownUrl = currentUrl
-    if (currentUrl) {
-      void import("./transport/relay.ts")
-        .then(({ RelayTransport }) =>
-          transport.switchTo(new RelayTransport(currentUrl)),
-        )
-        .then(() => log.info("config:relay-connected", { url: currentUrl }))
-        .catch((err) =>
-          log.warn("config:relay-connect-fail", {
-            url: currentUrl,
-            error: String(err),
-          }),
-        )
+  let lastDigest = relayPolicyDigest()
+  // Generation bypass (W1-U2d amendment item 2): a tool connect bumps this
+  // via setLastKnownUrl, forcing the next poll tick to re-evaluate policy
+  // even when the config content returned to a previously-seen digest.
+  let generation = 0
+  let switching = false
+  let lastRefusalSignature: string | null = null
+
+  /** Marker kind of the live inner transport ("relay" for RelayTransport). */
+  function liveInnerKind(): string | undefined {
+    return (transport.inner as unknown as { kind?: unknown }).kind as
+      | string
+      | undefined
+  }
+
+  /**
+   * True when the live inner transport is a RelayTransport already targeting
+   * exactly this URL and effective token (W1-U2d FIX 2). The comparison runs
+   * inside the transport, so the token value never leaves it.
+   */
+  function liveRelayMatches(
+    relayUrl: string,
+    token: string | undefined,
+  ): boolean {
+    if (liveInnerKind() !== "relay") return false
+    const candidate = transport.inner as unknown as {
+      isTargeting?: (relayUrl: string, token: string | undefined) => boolean
     }
+    return (
+      typeof candidate.isTargeting === "function" &&
+      candidate.isTargeting(relayUrl, token)
+    )
+  }
+
+  /**
+   * One poll-cycle policy evaluation (W1-U2c item A, W1-U2d revision): a
+   * policy input changed (or a tool connect forced re-evaluation), so
+   * (re)derive the live transport from the current inputs. An allowed URL
+   * connects (or reconnects) the relay, except when the live inner is
+   * already a RelayTransport targeting exactly that URL + token; a refusal
+   * tears down the live relay transport (gated on the actual live inner,
+   * not a bookkeeping flag) and falls back to file IPC. Refusal logs are
+   * rate-limited to one per distinct refusal state so each cycle does not
+   * spam.
+   */
+  async function evaluatePolicyInputs(currentUrl: string | null): Promise<void> {
+    switching = true
+    try {
+      let decision: RelayUrlDecision | null = null
+      if (currentUrl) {
+        decision = relayPolicyDecision(currentUrl)
+        if (!decision.ok) {
+          const signature = JSON.stringify([
+            currentUrl,
+            decision.code,
+            getAllowedRelayHosts(),
+          ])
+          if (signature !== lastRefusalSignature) {
+            lastRefusalSignature = signature
+            log.warn("plugin:poller:relay-refused", {
+              url: currentUrl,
+              code: decision.code,
+              reason: decision.message,
+              detail:
+                "policy inputs changed but the relay URL still fails the policy (https-default + operator allowlist); fix the config or call connect_relay",
+            })
+          }
+        }
+      } else {
+        lastRefusalSignature = null
+      }
+      if (currentUrl !== null && decision !== null && decision.ok) {
+        lastRefusalSignature = null
+        const currentToken = getRelayToken() ?? undefined
+        // W1-U2d FIX 2 short-circuit: the live inner transport is already a
+        // RelayTransport targeting exactly this URL + token (connect_relay
+        // switched moments ago, or the digest changed without a semantic
+        // endpoint change). Keep it: no dispose, no re-register churn.
+        if (liveRelayMatches(currentUrl, currentToken)) {
+          log.info("config:relay-unchanged", { url: currentUrl })
+          return
+        }
+        const { RelayTransport } = await import("./transport/relay.ts")
+        await transport.switchTo(new RelayTransport(currentUrl, currentToken))
+        log.info("config:relay-connected", { url: currentUrl })
+        return
+      }
+      // W1-U2d amendment item 1: gate the refusal teardown on the ACTUAL
+      // live transport, not a bookkeeping flag - connect_relay swaps the
+      // inner without touching any flag, so a tool-connected relay must
+      // tear down here too.
+      if (liveInnerKind() === "relay") {
+        log.error("config:relay-torn-down", {
+          url: currentUrl,
+          detail:
+            "live relay transport no longer matches the relay policy (https-default + operator allowlist); tearing it down and falling back to file IPC",
+        })
+        await transport.switchTo(new FileTransport(params.client, daemonId))
+      }
+    } catch (err) {
+      log.warn("config:relay-connect-fail", {
+        url: currentUrl,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      // Re-arm so the next cycle retries this evaluation instead of
+      // swallowing the change.
+      lastDigest = ""
+    } finally {
+      switching = false
+    }
+  }
+
+  const configPoller = setInterval(() => {
+    if (switching) return
+    const currentUrl = getRelayUrl()
+    const digest = relayPolicyDigest()
+    // Digest gate with a generation bypass: skip when nothing changed,
+    // except when a tool connect bumped the generation (W1-U2d amendment).
+    if (digest === lastDigest && generation === 0) return
+    lastDigest = digest
+    generation = 0
+    void evaluatePolicyInputs(currentUrl)
   }, CONFIG_POLL_MS)
 
   return {
     transport,
     daemonId,
-    setLastKnownUrl: (url: string) => {
-      lastKnownUrl = url
+    setLastKnownUrl: (_url: string) => {
+      // Tool-connect invalidation (W1-U2d amendment item 2): this hook is
+      // the tool-to-wiring contract; the bump forces the next poll tick to
+      // re-evaluate policy regardless of digest equality, closing the
+      // byte-identical-digest flap window for tool-initiated connects.
+      generation += 1
     },
     dispose: async () => {
       clearInterval(configPoller)

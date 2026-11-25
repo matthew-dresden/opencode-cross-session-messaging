@@ -78,7 +78,14 @@ export async function writeRegistry(next: Registry): Promise<void> {
   const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`
   const json = JSON.stringify(next, null, 2)
   try {
-    await fs.writeFile(tmp, json, "utf8")
+    await fs.writeFile(tmp, json, {
+      encoding: "utf8",
+      // Security remediation 2026-11: the registry carries session metadata
+      // (summaries, directories), so it is owner-only (0600) from creation
+      // (W1-U2c item C: mode at creation, chmod kept as belt-and-braces).
+      mode: 0o600,
+    })
+    await fs.chmod(tmp, 0o600)
     await fs.rename(tmp, path)
   } catch (err) {
     // Best-effort cleanup — swallow cleanup failure so we do not hide the

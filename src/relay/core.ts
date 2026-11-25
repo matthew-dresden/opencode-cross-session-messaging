@@ -101,8 +101,14 @@ export interface AskTimeoutEvent {
 
 /** Business-logic core for the relay. Owns all state and emits events on
  *  every mutation. The HTTP/WebSocket layer subscribes to broadcast to
- *  dashboards; the CLI subscribes to write log lines. */
+ *  dashboards; the CLI subscribes to write log lines.
+ *
+ *  Privacy default (security remediation 2026-11): question previews are OFF.
+ *  Broadcast events and the WS snapshot carry event type + ids + timing
+ *  only; question content never leaves the ask/reply delivery path unless
+ *  the operator explicitly opts in with `previews: true` (CLI --previews). */
 export class RelayCore extends EventEmitter {
+  private readonly previews: boolean
   private readonly sessions = new Map<string, RegistryEntry>()
   private readonly sessionToClient = new Map<string, string>()
   private readonly clientToSessions = new Map<string, Set<string>>()
@@ -113,8 +119,9 @@ export class RelayCore extends EventEmitter {
   private _activity: ActivityEntry[] = []
   private cleanupTimer: ReturnType<typeof setInterval> | null = null
 
-  constructor() {
+  constructor(opts?: { previews?: boolean }) {
     super()
+    this.previews = opts?.previews ?? false
     this.cleanupTimer = setInterval(
       () => this.cleanupStaleClients(),
       CLEANUP_INTERVAL_MS,
@@ -340,8 +347,13 @@ export class RelayCore extends EventEmitter {
     }
 
     const callerSessions = this.clientToSessions.get(callerClientId)
-    const fromSessionId: string =
-      callerSessions?.values().next().value ?? "unknown"
+    // Ask attribution (security remediation 2026-11): the caller's own
+    // registered session identifies the ask. An unregistered (anonymous)
+    // caller is attributed to the target session instead of a literal
+    // "unknown", so broadcast events and snapshots always carry a real
+    // session id.
+    const callerSessionId = callerSessions?.values().next().value
+    const fromSessionId: string = callerSessionId ?? data.toSessionId
     const createdAt = Date.now()
 
     this.pendingAsks.set(data.requestId, {
@@ -365,7 +377,9 @@ export class RelayCore extends EventEmitter {
       requestId: data.requestId,
       fromSessionId,
       toSessionId: data.toSessionId,
-      questionPreview: data.question.slice(0, QUESTION_PREVIEW_LEN),
+      questionPreview: this.previews
+        ? data.question.slice(0, QUESTION_PREVIEW_LEN)
+        : "",
       timeoutMs: data.timeoutMs,
       createdAt,
     } satisfies AskCreatedEvent)

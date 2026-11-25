@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { getRelayToken, setAllowedRelayHosts } from "./config.ts"
 import plugin from "./index.ts"
 import type { V2PluginContext, V2ToolDefinition } from "./v2types.ts"
 import { toV2AskClient } from "./v2ClientAdapter.ts"
@@ -299,6 +300,61 @@ describe("V2 ask_session (fake peer registry, file IPC)", () => {
     expect(result.content).toContain("did not respond within 300ms")
     await cleanup?.()
   }, 10_000)
+})
+
+// ---------------------------------------------------------------------------
+// V2 connect_relay schema parity with the V1 security gate (W1-U2c item B)
+// ---------------------------------------------------------------------------
+
+describe("V2 connect_relay schema parity", () => {
+  test("the V2 definition exposes the optional token in its input schema", async () => {
+    const ctx = fakeCtx()
+    const cleanup = await plugin.setup(ctx)
+    const connect = toolByName(ctx, "connect_relay")
+    expect(connect.input.properties.token).toMatchObject({ type: "string" })
+    expect(connect.input.required).toEqual(["url"])
+    expect(connect.input.additionalProperties).toBe(false)
+    await cleanup?.()
+  })
+
+  test("the V2 description states the security gate and drops the refused-shape example", async () => {
+    const ctx = fakeCtx()
+    const cleanup = await plugin.setup(ctx)
+    const connect = toolByName(ctx, "connect_relay")
+    expect(connect.description).toContain("allowedRelayHosts")
+    expect(connect.description).toContain("https")
+    expect(connect.description).toContain("loopback")
+    // The old example (plain http to a LAN host) is a shape the policy always
+    // refuses; it must not advertise it.
+    expect(connect.description).not.toContain("192.168.1.100")
+    await cleanup?.()
+  })
+
+  test("a V2 connect_relay execute passes the token through to the core", async () => {
+    await setAllowedRelayHosts(["relay.example.test:7351"])
+    const saved = [process.env.RELAY_TOKEN, process.env.CROSS_SESSION_RELAY_TOKEN]
+    delete process.env.RELAY_TOKEN
+    delete process.env.CROSS_SESSION_RELAY_TOKEN
+    const ctx = fakeCtx()
+    const cleanup = await plugin.setup(ctx)
+    try {
+      const result = await toolByName(ctx, "connect_relay").execute(
+        {
+          url: "https://relay.example.test:7351",
+          token: "v2-passthrough-token-0123456789",
+        },
+        makeV2ToolCtx(),
+      )
+      expect(result.content).toContain("Connected to relay")
+      // connectRelayCore persists the token it was handed: the pass-through
+      // must carry the V2 argument, not fall back to env/config defaults.
+      expect(getRelayToken()).toBe("v2-passthrough-token-0123456789")
+    } finally {
+      if (saved[0] !== undefined) process.env.RELAY_TOKEN = saved[0]
+      if (saved[1] !== undefined) process.env.CROSS_SESSION_RELAY_TOKEN = saved[1]
+      await cleanup?.()
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

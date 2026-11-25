@@ -167,6 +167,8 @@ export function buildV2Tools(deps: V2ToolDeps): V2ToolDefinition[] {
     name: "connect_relay",
     description:
       "Connect this daemon to a remote relay server for cross-device session messaging. " +
+      "Security: the relay host must be in the operator's allowedRelayHosts config and https is enforced " +
+      "(http only for loopback/localhost); disallowed URLs are refused with remediation guidance. " +
       "Takes effect immediately (no restart needed) and persists across restarts.",
     input: {
       type: "object",
@@ -175,7 +177,12 @@ export function buildV2Tools(deps: V2ToolDeps): V2ToolDefinition[] {
           type: "string",
           minLength: 5,
           description:
-            "HTTP URL of the relay server (e.g. http://192.168.1.100:7351).",
+            "HTTP URL of the relay server (e.g. https://relay.example.com:7351). Must be operator-allowlisted.",
+        },
+        token: {
+          type: "string",
+          description:
+            "Shared relay token (Authorization bearer). Omit to reuse the stored token.",
         },
       },
       required: ["url"],
@@ -185,6 +192,9 @@ export function buildV2Tools(deps: V2ToolDeps): V2ToolDefinition[] {
       const outcome = await connectRelayCore(
         { transport: deps.delegating, setLastKnownUrl: deps.setLastKnownUrl },
         String(input.url ?? ""),
+        typeof input.token === "string" && input.token.length > 0
+          ? input.token
+          : undefined,
       )
       return toContent(outcome)
     },

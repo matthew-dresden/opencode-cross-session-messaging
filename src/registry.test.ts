@@ -200,4 +200,16 @@ describe("registry", () => {
     expect(caught?.message).toMatch(/corrupt/i)
     expect(caught?.message).toMatch(/invalid JSON/i)
   })
+
+  test("registry file is written 0600 (owner-only)", async () => {
+    const { stat } = await import("node:fs/promises")
+    await upsertEntry({
+      sessionId: "ses_perm",
+      summary: "perm check",
+      directory: "/tmp",
+      projectId: "p1",
+    })
+    const fileStat = await stat(getRegistryPath())
+    expect(fileStat.mode & 0o777).toBe(0o600)
+  })
 })

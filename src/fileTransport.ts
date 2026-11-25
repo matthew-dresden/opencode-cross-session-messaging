@@ -78,7 +78,14 @@ async function writeAtomic(path: string, content: string): Promise<void> {
   await fs.mkdir(dirname(path), { recursive: true })
   const tmp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`
   try {
-    await fs.writeFile(tmp, content, "utf8")
+    await fs.writeFile(tmp, content, {
+      encoding: "utf8",
+      // Security remediation 2026-11: request/response files carry questions
+      // and replies, so they are owner-only (0600) from creation (W1-U2c
+      // item C: mode at creation, chmod kept as belt-and-braces).
+      mode: 0o600,
+    })
+    await fs.chmod(tmp, 0o600)
     await fs.rename(tmp, path)
   } catch (err) {
     await fs.unlink(tmp).catch(() => {})

@@ -124,4 +124,19 @@ describe("fileTransport", () => {
     const files = await readdir(getMessagesDir())
     expect(files.filter((f) => f.startsWith("r5"))).toHaveLength(0)
   })
+
+  test("written request/response files are 0600 (owner-only)", async () => {
+    const { stat } = await import("node:fs/promises")
+    await writeRequest({
+      requestId: "r6",
+      toSessionId: "ses_b",
+      question: "private question text",
+      createdAt: 1000,
+    })
+    await writeResponse({ requestId: "r6", reply: "private reply text", createdAt: 2000 })
+    const reqStat = await stat(join(getMessagesDir(), "r6.req.json"))
+    const resStat = await stat(join(getMessagesDir(), "r6.res.json"))
+    expect(reqStat.mode & 0o777).toBe(0o600)
+    expect(resStat.mode & 0o777).toBe(0o600)
+  })
 })

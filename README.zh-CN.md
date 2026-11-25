@@ -1,5 +1,8 @@
 # cross-session-messaging
 
+> [!NOTE]
+> 本翻译滞后于英文 README；v1.0.1 的安全模型以英文版 README 为准。
+
 **[English](./README.md)**
 
 一个 [OpenCode](https://opencode.ai) **plugin**，让同一台机器上的多个 session 互相通信——无论它们是否在同一个 daemon 进程里。任何 session 都能把自己的任务概要注册到共享 registry，发现其他活跃 session，并向指定 session 发起一次**阻塞式提问**，由对方的 AI 自动生成回复。

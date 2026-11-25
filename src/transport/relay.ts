@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { RELAY_HTTP_POLL_MS } from "../constants.ts"
 import { log } from "../logger.ts"
+import { isLoopbackHost } from "../relayPolicy.ts"
 import type { ServerMessage } from "../relay/protocol.ts"
 import { AskTimeoutError } from "../types.ts"
 import type { RegistryEntry } from "../types.ts"
@@ -13,6 +14,11 @@ interface Pending {
 
 export class RelayTransport implements ITransport {
   private readonly clientId = randomUUID()
+  /**
+   * Wiring-facing marker (W1-U2d): lets the config poller identify a live
+   * relay inner without importing this class.
+   */
+  readonly kind = "relay" as const
   private disposed = false
 
   private pending = new Map<string, Pending>()
@@ -25,11 +31,40 @@ export class RelayTransport implements ITransport {
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private polling = false
 
-  constructor(private readonly relayUrl: string) {
+  constructor(
+    private readonly relayUrl: string,
+    private readonly token?: string,
+  ) {
+    try {
+      const parsed = new URL(relayUrl)
+      if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+        log.error("relay:insecure-transport", {
+          relayUrl,
+          detail:
+            "non-loopback plaintext http relay: questions, replies, and registry metadata travel unencrypted in transit; configure an https relay",
+        })
+      }
+    } catch {
+      /* invalid URL is surfaced by the policy gate; nothing to warn about here */
+    }
     log.info("relay:transport:init", {
       relayUrl,
       clientId: this.clientId.slice(0, 8),
+      auth: token ? "bearer" : "none",
     })
+  }
+
+  private authHeaders(): Record<string, string> {
+    return this.token ? { Authorization: `Bearer ${this.token}` } : {}
+  }
+
+  /**
+   * True when this transport already targets exactly this relay URL and
+   * effective token (W1-U2d FIX 2). The comparison stays inside the class
+   * so the token value never leaves it.
+   */
+  isTargeting(relayUrl: string, token: string | undefined): boolean {
+    return this.relayUrl === relayUrl && this.token === token
   }
 
   async register(
@@ -318,6 +353,12 @@ export class RelayTransport implements ITransport {
     try {
       const res = await fetch(
         `${this.relayUrl}/api/poll?clientId=${encodeURIComponent(this.clientId)}`,
+        {
+          headers: this.authHeaders(),
+          // Redirect hardening (W1-U2c item F): a compromised relay must not
+          // be able to bounce a client call to a third-party host.
+          redirect: "error",
+        },
       )
       if (!res.ok) {
         log.warn("relay:poll:http-error", { status: res.status })
@@ -348,8 +389,14 @@ export class RelayTransport implements ITransport {
   ): Promise<unknown> {
     const res = await fetch(`${this.relayUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...this.authHeaders(),
+      },
       body: JSON.stringify(body),
+      // Redirect hardening (W1-U2c item F): a compromised relay must not be
+      // able to 302 a client POST (question content in the body) cross-origin.
+      redirect: "error",
     })
     if (!res.ok) {
       const text = await res.text()

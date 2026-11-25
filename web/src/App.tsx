@@ -8,6 +8,24 @@ import { ClientsPanel } from "./components/ClientsPanel"
 
 const MAX_ACTIVITY = 200
 
+const RELAY_TOKEN_STORAGE_KEY = "csm-relay-token"
+
+/**
+ * Shared relay token for the token-authed /ws endpoint (security
+ * remediation 2026-11). Resolved once per dashboard load: from
+ * localStorage, else the operator is prompted; the value is cached so a
+ * reconnect loop never re-prompts. Empty input means "no token" and the
+ * server will answer 401 until a token is supplied on a reload.
+ */
+function resolveRelayToken(): string | undefined {
+  const stored = localStorage.getItem(RELAY_TOKEN_STORAGE_KEY)?.trim()
+  if (stored) return stored
+  const entered = window.prompt("Relay shared token:")?.trim()
+  if (!entered) return undefined
+  localStorage.setItem(RELAY_TOKEN_STORAGE_KEY, entered)
+  return entered
+}
+
 export default function App() {
   const [connected, setConnected] = createSignal(false)
   const [sessions, setSessions] = createSignal<SessionInfo[]>([])
@@ -99,6 +117,7 @@ export default function App() {
     const conn = createRelayConnection({
       onEvent: handleEvent,
       onStatus: setConnected,
+      token: resolveRelayToken(),
     })
     onCleanup(() => conn.dispose())
   })

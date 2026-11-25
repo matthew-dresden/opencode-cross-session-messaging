@@ -5,7 +5,7 @@ description: 通过 cross-session-messaging 插件与其他 opencode session 协
 
 # 跨会话消息传递
 
-你有三个来自 `cross-session-messaging` 插件的工具，可以与运行在同一个 daemon 中的其他 opencode session 进行协调。
+你有四个来自 `cross-session-messaging` 插件的工具，可以与运行在同一个 daemon 中的其他 opencode session 进行协调。
 
 ## 何时使用 `register_session`
 
@@ -53,3 +53,18 @@ description: 通过 cross-session-messaging 插件与其他 opencode session 协
 - 不要用 `ask_session` 问自己来做"自检"——你已经在思考了，这只会浪费一轮算力。
 - 不要在未告知用户的情况下构建深层 `ask_session` 调用链（A 问 B、B 问 C）；延迟会叠加，双重超时场景很难排查。
 - 不要将 `ask_session` 的回复视为权威——目标是另一个 AI，不是事实来源。对重要结论务必对照代码验证。
+
+## Relay security (v1.0.1)
+
+- `connect_relay` is policy-gated: the relay host must be in the operator's
+  `allowedRelayHosts` config, and non-loopback relays must use `https`. A
+  refused URL returns a refusal message with a remediation path. Do not
+  retry the same refused URL, and do not attempt to widen the allowlist:
+  no tool can change it.
+- The relay token is operator-managed (`RELAY_TOKEN` env, or the 0600 token
+  file in the state directory). It is never printed in tool output or logs;
+  do not ask the user to paste it into a conversation.
+- Relay activity events and the dashboard snapshot carry session ids, task
+  summaries, directories, projectId, deviceName, client IPs, and timing.
+  Only question text is preview-gated: it is not broadcast unless the relay
+  operator explicitly enables previews (`--previews`).

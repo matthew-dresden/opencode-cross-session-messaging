@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.1] - 2026-11-25
+
+### Fixed
+
+- the v1.0.1 security remediation (shared-token auth, loopback-default bind, allowlist + https enforcement, preview privacy default-off, 0600 writes) (#7)
+
 ## [1.0.0] - 2026-10-16
 
 ### Breaking Changes

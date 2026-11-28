@@ -18,7 +18,7 @@ jobs:
   pr-title:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate PR title (conventional commits, breaking ! supported)
         shell: bash
@@ -33,7 +33,7 @@ jobs:
     # name "lint".
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
@@ -50,7 +50,7 @@ jobs:
     # (vite build -> web/dist/, which package.json "files" ships).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
@@ -65,7 +65,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
@@ -80,7 +80,7 @@ jobs:
   license-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: License and NOTICE compliance
         shell: bash
@@ -89,7 +89,7 @@ jobs:
   tarball-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
@@ -113,7 +113,7 @@ jobs:
     if: github.event.pull_request.user.login != vars.RELEASE_BOT_LOGIN
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
